@@ -12,7 +12,9 @@
 // Path name branch sanitisation: ':' and '/' are replaced with '_'.
 
 // user includes
+#include "DataFormats/Common/interface/Handle.h"
 #include "DataFormats/Common/interface/TriggerResults.h"
+#include "DataFormats/Provenance/interface/Provenance.h"
 #include "DataFormats/HLTReco/interface/TriggerEvent.h"
 #include "DataFormats/HLTReco/interface/TriggerObject.h"
 #include "DataFormats/NanoAOD/interface/FlatTable.h"
@@ -24,6 +26,7 @@
 #include "FWCore/ParameterSet/interface/ConfigurationDescriptions.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/ParameterSet/interface/ParameterSetDescription.h"
+#include "FWCore/Utilities/interface/Exception.h"
 #include "HLTrigger/HLTcore/interface/HLTConfigProvider.h"
 
 // standard includes
@@ -47,7 +50,8 @@ public:
 
 private:
   // Return the (sorted, unique) set of TriggerObjectCollection indices for
-  // objects that pass filterLabel.  Returns empty if the filter is not found.
+  // objects saved by filter filterLabel of process processName.
+  // Returns empty if the filter is not found.
   static std::vector<trigger::size_type> indicesPassingFilter(const trigger::TriggerEvent& trigEvent,
                                                               const std::string& filterLabel,
                                                               const std::string& processName);
@@ -82,9 +86,16 @@ std::shared_ptr<HLTConfigProvider> TrigObjP4FlatTableProducer::globalBeginRun(co
                                                                               const edm::EventSetup& setup) const {
   auto hltConfig = std::make_shared<HLTConfigProvider>();
   bool changed = false;
-  if (!hltConfig->init(run, setup, trigEventTag_.process(), changed))
-    edm::LogWarning("TrigObjP4FlatTableProducer")
-        << "HLTConfigProvider::init() failed for process " << trigEventTag_.process();
+  // The HLT menu (path -> last save-tags filter) must come from the same
+  // process as the TriggerEvent. If the triggerEvent InputTag has no process
+  // name, the framework uses the most recent process that produced it; the
+  // matching menu is then found with HLTConfigProvider's auto-discovery ("*"),
+  // which picks the most recent process in the history that ran
+  // hltTriggerSummaryAOD. produce() checks that both agree.
+  const std::string& tagProcess = trigEventTag_.process();
+  const std::string menuProcess = tagProcess.empty() ? std::string("*") : tagProcess;
+  if (!hltConfig->init(run, setup, menuProcess, changed))
+    edm::LogWarning("TrigObjP4FlatTableProducer") << "HLTConfigProvider::init() failed for process " << menuProcess;
   return hltConfig;
 }
 
@@ -95,9 +106,14 @@ std::vector<trigger::size_type> TrigObjP4FlatTableProducer::indicesPassingFilter
                                                                                  const std::string& filterLabel,
                                                                                  const std::string& processName) {
   for (size_t ifilt = 0; ifilt < trigEvent.sizeFilters(); ++ifilt) {
-    std::string fullname = trigEvent.filterTag(ifilt).label();  // just label part
-    //const trigger::size_type filterIdx = trigEvent.filterIndex(edm::InputTag(filterLabel, "", processName).encode());
-    if (fullname == filterLabel) {
+    const edm::InputTag filterTag = trigEvent.filterTag(ifilt);
+    // Match label AND process. A TriggerEvent can contain filters of other
+    // processes with the same label: the Phase-2 menu runs hltTriggerSummaryAOD
+    // with processName = "*", so when the HLT is re-run on an input that
+    // already has an HLT step, the filter objects of the old step are picked up
+    // as well. Matching the label alone could then return the objects of the
+    // OLD HLT filter, which do not belong to the path decisions of this menu.
+    if (filterTag.label() == filterLabel && filterTag.process() == processName) {
       if (ifilt >= trigEvent.sizeFilters())
         return {};
       const trigger::Keys& keys = trigEvent.filterKeys(ifilt);
@@ -121,9 +137,19 @@ std::string TrigObjP4FlatTableProducer::toBranchName(std::string name) {
 // produce
 // ---------------------------------------------------------------------------
 void TrigObjP4FlatTableProducer::produce(edm::StreamID, edm::Event& iEvent, const edm::EventSetup&) const {
-  const auto& trigEvent = iEvent.get(trigEventToken_);
+  const auto trigEventHandle = iEvent.getHandle(trigEventToken_);
+  const auto& trigEvent = *trigEventHandle;
   const auto& hltConfig = *runCache(iEvent.getRun().index());
-  const std::string& proc = trigEventTag_.process();
+  // Process that actually produced the TriggerEvent (resolved by the framework,
+  // also when the InputTag has no or a special process name).
+  const std::string& proc = trigEventHandle.provenance()->processName();
+  // Safety net: path -> filter lookups below use hltConfig, which must describe
+  // the menu of that same process. Otherwise the per-path flags would be wrong.
+  if (hltConfig.inited() && hltConfig.processName() != proc) {
+    throw cms::Exception("Configuration") << "TrigObjP4FlatTableProducer: the TriggerEvent comes from process '" << proc
+                                          << "' but the HLT menu was read for process '" << hltConfig.processName()
+                                          << "'. Set the process name of the triggerEvent InputTag explicitly.";
+  }
   const trigger::TriggerObjectCollection& allObjs = trigEvent.getObjects();
 
   // -----------------------------------------------------------------------
@@ -269,8 +295,10 @@ void TrigObjP4FlatTableProducer::fillDescriptions(edm::ConfigurationDescriptions
       "The row set is the union of objects passing the last save-tags filter "
       "of every path in pathNames and every filter in extraFilters.");
 
-  desc.add<edm::InputTag>("triggerEvent", edm::InputTag("hltTriggerSummaryAOD", "", "HLT"))
-      ->setComment("TriggerEvent summary product");
+  desc.add<edm::InputTag>("triggerEvent", edm::InputTag("hltTriggerSummaryAOD"))
+      ->setComment(
+          "TriggerEvent summary product. Without a process name, the most recent process that produced it "
+          "is used (e.g. the re-run HLT when HLT and NANO run in the same job).");
   desc.add<std::string>("tableName", "TrigObj")->setComment("nanoAOD table name");
   desc.add<std::vector<std::string>>("pathNames", {})
       ->setComment(

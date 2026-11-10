@@ -10,9 +10,24 @@ import FWCore.ParameterSet.Config as cms
 hltTriggerObjP4Table = cms.EDProducer(
     "TrigObjP4FlatTableProducer",
 
-    # TriggerEvent summary from HLT (process name must match your HLT menu).
-    #triggerEvent=cms.InputTag("hltTriggerSummaryAOD", "", "@currentProcess"),
-    triggerEvent=cms.InputTag("hltTriggerSummaryAOD", "", "HLT"),
+    # TriggerEvent summary of the most recent HLT in the event.
+    #
+    # No process name is given on purpose: an empty process name makes the
+    # framework pick the MOST RECENT process that produced the product, and
+    # the producer then reads the menu (HLTConfigProvider) of the most recent
+    # process that ran hltTriggerSummaryAOD. This covers both ways the
+    # Phase-2 HLT NANO is produced:
+    #  - HLT re-run and NANO in the same job (e.g. --processName HLT2 on
+    #    GEN-SIM-DIGI-RAW that already contains an HLT step): the objects of
+    #    the re-run (HLT2) are used, i.e. the same HLT that the HLT_* trigger
+    #    bits of the NANO come from. A hard-coded "HLT" would silently pick
+    #    up the objects of the ORIGINAL HLT step stored in the input file, so
+    #    the per-path object flags would not match the trigger bits;
+    #  - NANO in a separate job after the HLT job (e.g. the
+    #    HLTPhase2WithNanoAndDQM RelVal workflow): the objects of that
+    #    earlier HLT job are used. "@currentProcess" would fail here, since
+    #    the NANO job itself does not run the HLT.
+    triggerEvent=cms.InputTag("hltTriggerSummaryAOD"),
 
     # Name of the output branch group in the nanoAOD file.
     tableName=cms.string("TriggerObject"),
