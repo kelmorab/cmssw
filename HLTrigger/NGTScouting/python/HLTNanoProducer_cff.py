@@ -152,7 +152,55 @@ nano_l1_hlt.toReplaceWith(dstValidationNanoFlavour, dstValidationNanoFlavour.cop
 # Customization
 ######################################
 
+def _jobRunsHLT(process):
+    """True if the HLT menu runs in this job (HLT re-run and NANO in one job),
+    False if only the NANO step runs on the output of an earlier HLT job."""
+    return hasattr(process, "hltTriggerSummaryAOD")
+
+def _ignoreHLTProductsOfInputFile(process):
+    """If the HLT is re-run in this job, do not read the HLT products of the input file.
+
+    Use case: re-running L1+HLT on GEN-SIM-DIGI-RAW that already contains an
+    HLT step (e.g. the Phase-2 RelVals, whose HLT ran in process "HLT"), with
+    cmsDriver --processName HLT2 and NANO in the same job. Without this, the
+    products of the OLD HLT step leak into the output:
+      - the NanoAOD output module writes every edm::TriggerResults in the
+        event, so the old HLT decisions appear next to the new ones as
+        <path>_p<process> branches (e.g. HLT_IsoMu24_FromL1TkMuon_pHLT) and
+        tools must know which process to use;
+      - the Phase-2 menu runs hltTriggerSummaryAOD with processName = "*", so
+        the TriggerEvent of the re-run also collects the filter objects of the
+        old HLT step (log message of TriggerSummaryProducerAOD:
+        "Mismatch in number of filter tags: N!=M").
+    This is the same as running cmsDriver with
+      --inputCommands 'keep *, drop *_hlt*_*_HLT, drop triggerTriggerFilterObjectWithRefs_*_*_HLT, drop edmTriggerResults_*_*_HLT'
+    (see test/testNanohltDQM.sh), but independent of the process name of the
+    old HLT step. inputCommands only act on products read from the input
+    file, so the products of the current process are not affected.
+
+    To keep the old decisions (e.g. for comparisons), override
+    process.source.inputCommands via cmsDriver --customise_commands, which
+    run after this customisation.
+    """
+    if not _jobRunsHLT(process):
+        # NANO-only job: the input file holds the HLT results we want to write.
+        return
+    if not hasattr(process, "source") or process.source.type_() != "PoolSource":
+        return
+    commands = list(process.source.inputCommands) if hasattr(process.source, "inputCommands") else ["keep *"]
+    commands += [
+        # HLT reconstruction products and hltTriggerSummaryAOD of earlier HLT steps
+        "drop *_hlt*_*_*",
+        # filter objects (incl. the l1t* GT algo filters) of earlier HLT/L1 steps
+        "drop triggerTriggerFilterObjectWithRefs_*_*_*",
+        # path decisions of earlier processes (HLT, SIM, ...)
+        "drop edmTriggerResults_*_*_*",
+    ]
+    process.source.inputCommands = cms.untracked.vstring(commands)
+
 def hltNanoCustomize(process):
+
+    _ignoreHLTProductsOfInputFile(process)
 
     if hasattr(process, "NANOAODSIMoutput"):
         # process.genJetTable.cut = "pt > 10"
