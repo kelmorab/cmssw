@@ -30,10 +30,39 @@ from HLTrigger.NGTScouting.hltLayerClusters_cfi import *
 from HLTrigger.NGTScouting.hltSums_cfi import *
 from HLTrigger.NGTScouting.hltTriggerObjects_cff import *
 from HLTrigger.NGTScouting.hltTriggerAcceptFilter_cfi import hltTriggerAcceptFilter,dstTriggerAcceptFilter
+from DPGAnalysis.Phase2L1TNanoAOD.l1tPh2GTtables_cff import l1tP2GTTrigConvert
 
 ######################################
-# Tables 
+# Tables
 ######################################
+
+# Phase-2 L1 Global Trigger (GT) algorithm decisions as trigger bits.
+#
+# The GT algorithms of the menu (pSingleTkMuon22, ...) are cms.Paths of the
+# L1P2GT step, but the NanoAOD output module only writes trigger bits whose
+# name starts with "HLT", "L1" or "Flag" (or contains "Scouting"), so their
+# decisions are not in the HLT NANO by default. P2GTTriggerResultsConverter
+# (DPGAnalysis/Phase2L1TNanoAOD) converts the GT algo block into an
+# edm::TriggerResults with names "L1_<algo>_<decision>", which the NanoAOD
+# output module then writes as bool branches, e.g. L1_pSingleTkMuon22_final.
+# Two decisions are stored:
+#  - "final": after BX mask and prescale. This is what the HLT sees
+#    (hltL1GTAcceptFilter uses decision = "final"). The module is the same
+#    one as in the Phase-2 L1 DPG NANO (NANO:@Phase2L1DPG), so combining both
+#    flavours (NANO:@Phase2HLT+@Phase2L1DPG) gives each bit once.
+#  - "beforePrescale": after BX mask, before prescale. Needed to apply other
+#    prescale columns later, e.g. in rate estimates. The GT emulator
+#    prescales default to 1, so both decisions agree unless the emulated menu
+#    sets prescales.
+# NB: the NanoAOD output module cuts L1/HLT names at the last "_v" (version
+# suffix). GT algorithm names containing "_v" would be truncated.
+l1tP2GTTrigConvertBeforePrescale = l1tP2GTTrigConvert.clone(
+    decision = "beforePrescale"
+)
+NanoL1GTBits = cms.Sequence(
+    l1tP2GTTrigConvert
+    + l1tP2GTTrigConvertBeforePrescale
+)
 
 # Produce and store gen particles and gen jets
 NanoGenTables = cms.Sequence(
@@ -128,6 +157,7 @@ dstValidationNanoFlavour = cms.Sequence(
 # Phase-2 HLT Nano flavour (NANO:@Phase2HLT)
 hltNanoFlavour = cms.Sequence(
     NanoHltTables
+    + NanoL1GTBits
 )
 
 # Phase-2 HLT Nano flavour with MC/HGCal info (NANO:@Phase2HLTVal)
