@@ -6,7 +6,8 @@
 //
 // Per-row columns:
 //   pt, eta, phi, mass   - four-momentum
-//   id                   - trigger object type id (TriggerTypeDefs.h)
+//   id                   - particle id (pdgId of the HLT candidate; TriggerTypeDefs.h
+//                          code for scalar energy sums), see the column doc below
 //   <pathName>           - bool: object passes the last filter of that path
 //
 // Path name branch sanitisation: ':' and '/' are replaced with '_'.
@@ -274,10 +275,17 @@ void TrigObjP4FlatTableProducer::produce(edm::StreamID, edm::Event& iEvent, cons
   table->addColumn<float>("eta", eta, "trigger object eta");
   table->addColumn<float>("phi", phi, "trigger object phi [rad]");
   table->addColumn<float>("mass", mass, "trigger object mass [GeV]");
+  // trigger::TriggerObject::id() is filled by TriggerSummaryProducerAOD with
+  // the pdgId of the HLT candidate. Only the extra scalar entries it adds for
+  // energy sums carry a TriggerTypeDefs.h code (e.g. trigger::TriggerTHT = 89
+  // next to the MET object of an HT filter). The trigger type of the filter
+  // (TriggerTypeDefs.h, e.g. 83 = TriggerMuon) is NOT stored here.
   table->addColumn<int>("id",
                         id,
-                        "trigger object type id – see DataFormats/HLTReco/interface/TriggerTypeDefs.h "
-                        "(e.g. 81=photon, 82=electron, 83=muon, 84=tau, 85=jet, 86=bjet, 87=MET, 0=other)");
+                        "particle id of the trigger object (trigger::TriggerObject::id()): pdgId of the HLT "
+                        "candidate (e.g. +-13 muon, +-15 tau; 0 for e/gamma candidates, jets and MET/MHT objects); "
+                        "scalar energy sums use DataFormats/HLTReco/interface/TriggerTypeDefs.h codes (e.g. 88 = "
+                        "total ET, 89 = HT). Not the trigger type of the filter");
 
   for (const PathFlag& pf : pathFlags)
     table->addColumn<bool>(pf.branchName, pf.fired, pf.docString);
