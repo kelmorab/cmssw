@@ -30,6 +30,7 @@ from HLTrigger.NGTScouting.hltLayerClusters_cfi import *
 from HLTrigger.NGTScouting.hltSums_cfi import *
 from HLTrigger.NGTScouting.hltTriggerObjects_cff import *
 from HLTrigger.NGTScouting.hltTriggerAcceptFilter_cfi import hltTriggerAcceptFilter,dstTriggerAcceptFilter
+from HLTrigger.NGTScouting.hltTriggerPathTables_cff import *
 from DPGAnalysis.Phase2L1TNanoAOD.l1tPh2GTtables_cff import l1tP2GTTrigConvert
 
 ######################################
@@ -188,9 +189,15 @@ dstValidationNanoFlavour = cms.Sequence(
 )
 
 # Phase-2 HLT Nano flavour (NANO:@Phase2HLT)
+# hltTriggerPathTablesTask (decisions of MC_*, DQM_*, ... paths, which the
+# NanoAOD output module does not write) is a Task, not part of the
+# scheduled sequence: its modules read the TriggerResults of the current
+# process, which only exists after all Paths have finished (see
+# hltTriggerPathTables_cff.py).
 hltNanoFlavour = cms.Sequence(
     NanoHltTables
-    + NanoL1GTBits
+    + NanoL1GTBits,
+    hltTriggerPathTablesTask
 )
 
 # Phase-2 HLT Nano flavour with MC/HGCal info (NANO:@Phase2HLTVal)
@@ -348,6 +355,16 @@ def hltNanoSelectTriggeredEvents(process):
 def hltNanoCustomize(process):
 
     _ignoreHLTProductsOfInputFile(process)
+
+    # hltTriggerPathBitsTable reads the TriggerResults of the current process
+    # by default, i.e. of the HLT when HLT and NANO run in the same job. In a
+    # NANO-only job (HLT run in an earlier job), the HLT decisions are those
+    # of the earlier job: use process "HLT", the name used by the standard
+    # workflows (e.g. HLTPhase2WithNanoAndDQM). If the HLT ran with another
+    # process name, set process.hltTriggerPathBitsTable.src with
+    # cmsDriver --customise_commands.
+    if not _jobRunsHLT(process) and hasattr(process, "hltTriggerPathBitsTable"):
+        process.hltTriggerPathBitsTable.src = cms.InputTag("TriggerResults", "", "HLT")
 
     if hasattr(process, "NANOAODSIMoutput"):
         # MC weights, weight sums and pileup for the Phase-2 HLT NANO
