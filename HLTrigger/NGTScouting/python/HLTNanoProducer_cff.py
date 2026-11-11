@@ -64,6 +64,39 @@ NanoL1GTBits = cms.Sequence(
     + l1tP2GTTrigConvertBeforePrescale
 )
 
+# MC event weights, weight sums and pileup information.
+#
+# Needed to normalise MC, e.g. for trigger rates:
+#  - hltGenWeightsTable: per event "genWeight" (and PS/LHE weights if
+#    available), and in the Runs tree the sums over ALL processed events
+#    (genEventCount, genEventSumw, genEventSumw2, ...). The sums are
+#    accumulated in produce(), so these modules must be scheduled on the NANO
+#    path, before any filter; see hltNanoCustomize. Then the sums count every
+#    processed event, also those not written because of the output event
+#    selection (NANOAODSIMoutput.SelectEvents);
+#  - hltGeneratorTable: Generator_weight, Generator_binvar (pT-hat for binned
+#    QCD samples), PDF info;
+#  - hltPileupTable: Pileup_nTrueInt, Pileup_nPU, Pileup_pthatmax, ... read
+#    from the GEN-SIM-DIGI-RAW product addPileupInfo (the standard NANO reads
+#    the MINIAOD copy slimmedAddPileupInfo). The PU density variables need
+#    offline primary vertices and are switched off.
+# These modules use their own labels (not genWeightsTable/genTable/puTable),
+# so that they do not clash with the standard NANO modules, which other
+# flavours (e.g. NANO:@Phase2L1DPG) load into the same process.
+from PhysicsTools.NanoAOD.genWeightsTable_cfi import genWeightsTable as _genWeightsTable
+from PhysicsTools.NanoAOD.globals_cff import genTable as _genTable, puTable as _puTable
+hltGenWeightsTable = _genWeightsTable.clone()
+hltGeneratorTable = _genTable.clone()
+hltPileupTable = _puTable.clone(
+    src = "addPileupInfo",
+    savePUDensityVars = False
+)
+NanoMCWeightTables = cms.Sequence(
+    hltGenWeightsTable
+    + hltGeneratorTable
+    + hltPileupTable
+)
+
 # Produce and store gen particles and gen jets
 NanoGenTables = cms.Sequence(
     prunedGenParticlesWithStatusOne
@@ -233,6 +266,13 @@ def hltNanoCustomize(process):
     _ignoreHLTProductsOfInputFile(process)
 
     if hasattr(process, "NANOAODSIMoutput"):
+        # MC weights, weight sums and pileup for the Phase-2 HLT NANO
+        # (NANO:@Phase2HLT). Inserted FIRST into the scheduled sequence, so
+        # that they run for every event (see NanoMCWeightTables above).
+        # MC only, since they need the generator products.
+        if hasattr(process, "hltNanoFlavour"):
+            process.hltNanoFlavour.insert(0, process.NanoMCWeightTables)
+
         # process.genJetTable.cut = "pt > 10"
         # process.genJetFlavourTable.deltaR = 0.3
         process.genParticleTable.externalVariables = cms.PSet() # remove iso as external variable from PhysicsTools/NanoAOD/python/genparticles_cff.py:37 (hopefully temporarily)
