@@ -14,6 +14,23 @@
 // estimates of the full menu (AlCa_* streams, dataset rates from Dataset_*).
 // This module writes them without changing the NanoAOD output module.
 //
+// What is written per path ("content")
+// ------------------------------------
+//  - "accept" (default): the path decision, bool.
+//  - "lastModuleIndex": edm::HLTPathStatus::index(), uint16: the index of the
+//    last module that ran on the path. For a path that rejected the event,
+//    this is the module that rejected it; for an accepted path, it is the
+//    last module of the path. Together with the module list of the path,
+//    which is stored in the ParameterSets tree of every NANO file (process
+//    configuration, parameter named like the path, labels in path order),
+//    this gives the number of events passing EACH module of the path, i.e.
+//    rates after each filter, also for filters that save no trigger objects.
+//    Per-object flags ("object saved by filter X", TrigObjP4FlatTableProducer)
+//    cannot provide this: a filter saves the objects that pass its
+//    per-object cuts also when the event fails the filter (e.g. multiplicity
+//    or HT threshold not reached). Paths missing from the menu of the current
+//    run get the value 65535.
+//
 // Branch names and titles
 // -----------------------
 // With an empty table name (name = ""), the branches are named exactly like
@@ -40,10 +57,11 @@
 // --------------------------------------------
 // The NanoAOD output module books the branches with the first table it sees,
 // so the set of columns is fixed by the menu of the first event. For later
-// menus, booked paths that are missing are written as false, and paths that
-// are not booked are skipped with a warning.
+// menus, booked paths that are missing are written as false (or 65535), and
+// paths that are not booked are skipped with a warning.
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <regex>
 #include <string>
@@ -63,12 +81,17 @@
 #include "FWCore/ParameterSet/interface/ConfigurationDescriptions.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/ParameterSet/interface/ParameterSetDescription.h"
+#include "FWCore/ParameterSet/interface/allowedValues.h"
 #include "FWCore/Utilities/interface/RegexMatch.h"
 
 class TriggerPathStatusTableProducer : public edm::stream::EDProducer<> {
 public:
   explicit TriggerPathStatusTableProducer(const edm::ParameterSet&);
   static void fillDescriptions(edm::ConfigurationDescriptions&);
+
+  enum class Content { accept, lastModuleIndex };
+  // value of a lastModuleIndex column for a path that is not in the current menu
+  static constexpr uint16_t kPathNotInMenu = 65535;
 
 private:
   void produce(edm::Event&, const edm::EventSetup&) override;
@@ -86,6 +109,7 @@ private:
   const std::vector<std::string> pathPatterns_;
   const bool skipPathsWrittenByNanoAOD_;
   const bool stripVersions_;
+  const Content content_;
 
   struct Column {
     std::string name;    // column (= branch) name
@@ -101,7 +125,9 @@ TriggerPathStatusTableProducer::TriggerPathStatusTableProducer(const edm::Parame
       tableName_(params.getParameter<std::string>("name")),
       pathPatterns_(params.getParameter<std::vector<std::string>>("paths")),
       skipPathsWrittenByNanoAOD_(params.getParameter<bool>("skipPathsWrittenByNanoAOD")),
-      stripVersions_(params.getParameter<bool>("stripVersions")) {
+      stripVersions_(params.getParameter<bool>("stripVersions")),
+      content_(params.getParameter<std::string>("content") == "lastModuleIndex" ? Content::lastModuleIndex
+                                                                                : Content::accept) {
   produces<nanoaod::FlatTable>();
 }
 
@@ -168,13 +194,27 @@ void TriggerPathStatusTableProducer::produce(edm::Event& event, const edm::Event
     menuID_ = names.parameterSetID();
   }
 
-  // Same title as the trigger bits written by the NanoAOD output module.
-  const std::string doc = "Trigger/flag bit (process: " + resultsHandle.provenance()->processName() + ")";
-
+  const std::string& process = resultsHandle.provenance()->processName();
   auto table = std::make_unique<nanoaod::FlatTable>(1, tableName_, true);
-  for (const auto& column : columns_) {
-    const bool accept = column.pathIndex >= 0 && results.accept(column.pathIndex);
-    table->addColumnValue<bool>(column.name, accept, doc);
+
+  if (content_ == Content::accept) {
+    // Same title as the trigger bits written by the NanoAOD output module.
+    const std::string doc = "Trigger/flag bit (process: " + process + ")";
+    for (const auto& column : columns_) {
+      const bool accept = column.pathIndex >= 0 && results.accept(column.pathIndex);
+      table->addColumnValue<bool>(column.name, accept, doc);
+    }
+  } else {
+    const std::string doc =
+        "index of the last module run on this path (edm::HLTPathStatus::index(), process: " + process +
+        "): the module that rejected the event if the path failed, the last module of the path "
+        "if it accepted; module list of the path in the ParameterSets tree; " +
+        std::to_string(kPathNotInMenu) + " = path not in the menu of this run";
+    for (const auto& column : columns_) {
+      const uint16_t index =
+          column.pathIndex >= 0 ? static_cast<uint16_t>(results.index(column.pathIndex)) : kPathNotInMenu;
+      table->addColumnValue<uint16_t>(column.name, index, doc);
+    }
   }
   event.put(std::move(table));
 }
@@ -182,9 +222,10 @@ void TriggerPathStatusTableProducer::produce(edm::Event& event, const edm::Event
 void TriggerPathStatusTableProducer::fillDescriptions(edm::ConfigurationDescriptions& descriptions) {
   edm::ParameterSetDescription desc;
   desc.setComment(
-      "Writes the decisions of selected paths of an edm::TriggerResults into a singleton nanoaod::FlatTable, "
-      "e.g. for paths whose bits the NanoAOD output module does not write (MC_*, AlCa_*, Dataset_*, ...). "
-      "When reading the TriggerResults of the current process, the module must be in a Task, not on a Path.");
+      "Writes the decisions (or the index of the last module run) of selected paths of an edm::TriggerResults into "
+      "a singleton nanoaod::FlatTable, e.g. for paths whose bits the NanoAOD output module does not write (MC_*, "
+      "AlCa_*, Dataset_*, ...) or for per-filter rates. When reading the TriggerResults of the current process, "
+      "the module must be in a Task, not on a Path.");
   desc.add<edm::InputTag>("src", edm::InputTag("TriggerResults", "", "@currentProcess"))
       ->setComment("TriggerResults to read");
   desc.add<std::string>("name", "")
@@ -198,6 +239,12 @@ void TriggerPathStatusTableProducer::fillDescriptions(edm::ConfigurationDescript
           "Skip paths whose bits the NanoAOD output module writes itself (name starts with HLT, L1 or Flag, or "
           "contains Scouting), to avoid two branches with the same name");
   desc.add<bool>("stripVersions", true)->setComment("Remove the version suffix _v<N> from the path names");
+  desc.ifValue(edm::ParameterDescription<std::string>("content", "accept", true),
+               edm::allowedValues<std::string>("accept", "lastModuleIndex"))
+      ->setComment(
+          "accept: path decision (bool). lastModuleIndex: edm::HLTPathStatus::index() (uint16), the index of the "
+          "last module run on the path, " +
+          std::to_string(kPathNotInMenu) + " if the path is not in the menu of the current run");
   descriptions.addWithDefaultLabel(desc);
 }
 

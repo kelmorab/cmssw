@@ -32,6 +32,35 @@ hltTriggerPathBitsTable = cms.EDProducer(
     stripVersions = cms.bool(True),
 )
 
+# ---------------------------------------------------------------------------
+# Per-filter rates: index of the last module that ran on each path.
+#
+# Branches PathLastModule_<path> (uint16) = edm::HLTPathStatus::index():
+#  - path rejected the event: index of the module that rejected it;
+#  - path accepted the event: index of the last module of the path;
+#  - 65535: path not in the menu of this run.
+# The module list of each path is in the ParameterSets tree of the NANO file
+# (process configuration of the HLT process, parameter named like the path,
+# labels in path order). An event passed module k of path P if
+# PathLastModule_P > k, or if P accepted the event (then PathLastModule_P is
+# the index of the last module). This gives rates after each filter, for every path and
+# also for filters that save no trigger objects. The per-object flags of
+# the TriggerObject table cannot give this: a filter saves the objects that
+# pass its per-object cuts also when the event fails the filter.
+# Most paths stop at the L1 seed filter or the prescaler, so the values
+# compress well.
+# ---------------------------------------------------------------------------
+
+hltTriggerPathLastModuleTable = hltTriggerPathBitsTable.clone(
+    content = cms.string("lastModuleIndex"),
+    name = "PathLastModule",
+    # all physics/calibration/monitoring paths, including the HLT_* paths
+    # (no clash with the NanoAOD trigger bits: own table name)
+    paths = ["HLT_*", "MC_*", "DST_*", "AlCa_*", "Dataset_*", "DQM_*", "Status_*"],
+    skipPathsWrittenByNanoAOD = False,
+)
+
 hltTriggerPathTablesTask = cms.Task(
-    hltTriggerPathBitsTable
+    hltTriggerPathBitsTable,
+    hltTriggerPathLastModuleTable
 )

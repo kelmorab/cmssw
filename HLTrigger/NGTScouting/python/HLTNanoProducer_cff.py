@@ -356,15 +356,17 @@ def hltNanoCustomize(process):
 
     _ignoreHLTProductsOfInputFile(process)
 
-    # hltTriggerPathBitsTable reads the TriggerResults of the current process
-    # by default, i.e. of the HLT when HLT and NANO run in the same job. In a
-    # NANO-only job (HLT run in an earlier job), the HLT decisions are those
-    # of the earlier job: use process "HLT", the name used by the standard
-    # workflows (e.g. HLTPhase2WithNanoAndDQM). If the HLT ran with another
-    # process name, set process.hltTriggerPathBitsTable.src with
-    # cmsDriver --customise_commands.
-    if not _jobRunsHLT(process) and hasattr(process, "hltTriggerPathBitsTable"):
-        process.hltTriggerPathBitsTable.src = cms.InputTag("TriggerResults", "", "HLT")
+    # hltTriggerPathBitsTable and hltTriggerPathLastModuleTable read the
+    # TriggerResults of the current process by default, i.e. of the HLT when
+    # HLT and NANO run in the same job. In a NANO-only job (HLT run in an
+    # earlier job), the HLT decisions are those of the earlier job: use
+    # process "HLT", the name used by the standard workflows (e.g.
+    # HLTPhase2WithNanoAndDQM). If the HLT ran with another process name, set
+    # the src of these modules with cmsDriver --customise_commands.
+    if not _jobRunsHLT(process):
+        for label in ("hltTriggerPathBitsTable", "hltTriggerPathLastModuleTable"):
+            if hasattr(process, label):
+                getattr(process, label).src = cms.InputTag("TriggerResults", "", "HLT")
 
     if hasattr(process, "NANOAODSIMoutput"):
         # MC weights, weight sums and pileup for the Phase-2 HLT NANO
