@@ -261,6 +261,90 @@ def _ignoreHLTProductsOfInputFile(process):
     ]
     process.source.inputCommands = cms.untracked.vstring(commands)
 
+def _l1AcceptPaths(process):
+    """Path(s) for selecting events in which any Phase-2 L1 GT algorithm fired, BEFORE prescale.
+
+    Adds (once) the path hltNanoL1GTAcceptPath with an L1GTAcceptFilter
+    (decision = "beforePrescale"), the module the HLT paths use for their L1
+    seeding (there with decision = "final"). It accepts an event if any
+    physics algorithm of the GT menu fired (and no veto algorithm), so every
+    event that some L1 prescale column could accept is selected.
+    The single GT algorithm paths (pSingleTkMuon22, ...) cannot be used
+    directly: an algorithm can combine several paths (e.g.
+    "pPuppiHT400 and pQuadJet70_55_40_40"), while SelectEvents can only OR
+    path decisions.
+    The path name does not start with "HLT", "L1" or "Flag", so the NanoAOD
+    output module does not write it as a trigger bit.
+    Returns [] if the GT does not run in this job.
+    """
+    if not hasattr(process, "l1tGTAlgoBlockProducer"):
+        return []
+    if not hasattr(process, "hltNanoL1GTAcceptPath"):
+        from L1Trigger.Phase2L1GT.l1GTAcceptFilter_cff import l1tGTAcceptFilter
+        process.hltNanoL1GTAcceptFilter = l1tGTAcceptFilter.clone(decision = cms.string("beforePrescale"))
+        process.hltNanoL1GTAcceptPath = cms.Path(process.hltNanoL1GTAcceptFilter)
+        if process.schedule is not None:
+            # insert before the first EndPath, i.e. among the other Paths
+            endPaths = [i for i, p in enumerate(process.schedule) if isinstance(p, cms.EndPath)]
+            process.schedule.insert(endPaths[0] if endPaths else len(process.schedule),
+                                    process.hltNanoL1GTAcceptPath)
+    return ["hltNanoL1GTAcceptPath"]
+
+def _usesPhase2HLTFlavour(process):
+    """True if the NANO:@Phase2HLT flavour (hltNanoFlavour) runs in this job.
+
+    hltNanoCustomize is shared by all flavours of this file (NGTScouting,
+    Phase2HLTVal, ...). Changes meant for NANO:@Phase2HLT only check this.
+    l1tP2GTTrigConvertBeforePrescale is only part of hltNanoFlavour.
+    """
+    return any("l1tP2GTTrigConvertBeforePrescale" in path.moduleNames() for path in process.paths.values())
+
+def _nanoOutputModules(process):
+    return [getattr(process, label) for label in ("NANOAODSIMoutput", "NANOAODoutput") if hasattr(process, label)]
+
+def _hasEventSelection(output):
+    """True if an event selection (non-empty SelectEvents) is configured for the output module."""
+    return (hasattr(output, "SelectEvents") and hasattr(output.SelectEvents, "SelectEvents")
+            and len(output.SelectEvents.SelectEvents) > 0)
+
+def hltNanoSelectTriggeredEvents(process):
+    """Opt-in event selection: write only events that fire at least one L1 seed or HLT path.
+
+    Meant for trigger-rate ntuples, mainly on MinBias / NuGun samples, where
+    only a few percent of the events fire any L1 GT algorithm. The other
+    events contribute to no L1 or HLT rate, so they need not be written.
+    Rates are then normalised with the number of PROCESSED events, from the
+    Runs tree (genEventCount / genEventSumw of hltGenWeightsTable, which counts
+    all processed events), not with the number of entries of the Events tree.
+
+    Kept are the events that fire any of:
+      - a Phase-2 L1 GT algorithm, decision BEFORE prescale (after BX mask),
+        so that every event that some prescale column could accept is kept
+        (path hltNanoL1GTAcceptPath, see _l1AcceptPaths);
+      - an HLT_*, DST_* or AlCa_* path.
+    MC_* and DQM_* paths are not used: in the Phase-2 menu MC_JME, MC_BTV and
+    MC_TRK have no filter and accept every event.
+    NB: for a menu with a seed that fires on (almost) every event, e.g. a
+    ZeroBias-like seed, this keeps (almost) every event.
+
+    Not suited for efficiency or turn-on studies, which need the events that
+    fail the triggers as well.
+
+    Usage: add to the cmsDriver command
+      --customise HLTrigger/NGTScouting/HLTNanoProducer_cff.hltNanoSelectTriggeredEvents
+    cmsDriver applies --customise functions BEFORE the customisation of the
+    NANO flavour (hltNanoCustomize); hltNanoCustomize keeps an event selection
+    that is already configured, also with --procModifiers nano_l1_hlt.
+    """
+    paths = [p for p in process.paths if p.startswith(("HLT_", "DST_", "AlCa_"))] + _l1AcceptPaths(process)
+    if not paths:
+        raise RuntimeError(
+            "hltNanoSelectTriggeredEvents: neither L1 GT algorithms nor HLT paths run in this job, "
+            "so there is nothing to select on. Run L1P2GT and HLT in the same job as the NANO step.")
+    for output in _nanoOutputModules(process):
+        output.SelectEvents = cms.untracked.PSet(SelectEvents = cms.vstring(paths))
+    return process
+
 def hltNanoCustomize(process):
 
     _ignoreHLTProductsOfInputFile(process)
@@ -282,16 +366,26 @@ def hltNanoCustomize(process):
         process.NANOAODSIMoutput.outputCommands.append(
             "keep nanoaodFlatTable_*Table*_*_*"
         )
-        process.NANOAODSIMoutput.SelectEvents = cms.untracked.PSet(
-            SelectEvents = cms.vstring(
-                [p for p in process.paths if p.startswith('HLT_') or p.startswith('MC_') or p.startswith('DST_')]
+        # Default event selection: events that fire any HLT_/MC_/DST_ path,
+        # and, for NANO:@Phase2HLT, also events in which any Phase-2 L1 GT
+        # algorithm fired (decision before prescale, see _l1AcceptPaths), so
+        # that events that only fire an L1 seed are not lost (L1 rates,
+        # L1-only studies). The other flavours keep their selection as before.
+        # NB: in the Phase-2 menu MC_JME, MC_BTV and MC_TRK have no filter,
+        # so in practice ALL events are written. For rate ntuples, see the opt-in
+        # hltNanoSelectTriggeredEvents.
+        # A selection configured before this customisation (e.g. by
+        # hltNanoSelectTriggeredEvents given with --customise) is kept.
+        # With the process modifier nano_l1_hlt there is no default selection
+        # (all events are written), as before.
+        def _setDefaultEventSelection(process):
+            process.NANOAODSIMoutput.SelectEvents = cms.untracked.PSet(
+                SelectEvents = cms.vstring(
+                    [p for p in process.paths if p.startswith('HLT_') or p.startswith('MC_') or p.startswith('DST_')]
+                    + (_l1AcceptPaths(process) if _usesPhase2HLTFlavour(process) else [])
+                )
             )
-        )
-
-        # disable SelectEvents for nano_l1_hlt
-        nano_l1_hlt.toModify(
-            process.NANOAODSIMoutput,
-            SelectEvents = cms.untracked.PSet()
-        )
+        if not _hasEventSelection(process.NANOAODSIMoutput):
+            (~nano_l1_hlt).toModify(process, _setDefaultEventSelection)
 
     return process
